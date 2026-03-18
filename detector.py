@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import List
 
+import cv2
 import mediapipe as mp
 import numpy as np
 from mediapipe.tasks.python.vision import FaceLandmarksConnections as flc
@@ -75,7 +76,7 @@ class FaceDetector:
 
     def detect(self, frame_bgr: np.ndarray) -> List[FaceResult]:
         """Run face landmark detection. Returns list of FaceResult with normalized coords."""
-        frame_rgb = frame_bgr[:, :, ::-1].copy()  # BGR -> RGB
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
         self._frame_ts += 33  # ~30fps, timestamps must be monotonically increasing

@@ -1,6 +1,6 @@
 """YOLO-based face detector — fallback when MediaPipe loses tracking.
 
-Uses ultralytics YOLOv8-face (or YOLO11) to detect face bounding boxes.
+Uses ultralytics YOLOv12-face to detect face bounding boxes.
 Returns BBoxResult (normalized 0-1) instead of landmarks.
 
 Gracefully optional: if ultralytics is not installed, YOLO_AVAILABLE is False

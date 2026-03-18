@@ -3,15 +3,8 @@ from typing import List
 import cv2
 import numpy as np
 
-from config import RuntimeConfig
-from detector import (
-    FaceResult,
-    FACE_OVAL_INDICES,
-    LEFT_EYE_INDICES,
-    LEFT_EYEBROW_INDICES,
-    RIGHT_EYE_INDICES,
-    RIGHT_EYEBROW_INDICES,
-)
+from config import CONTOUR_MODES, RuntimeConfig
+from detector import FaceResult
 from detector_yolo import BBoxResult
 
 
@@ -68,19 +61,7 @@ class MaskGenerator:
         for face in faces:
             lm = face.landmarks.copy()
 
-            if self.config.mask_mode == "eyes":
-                contours = [LEFT_EYE_INDICES, RIGHT_EYE_INDICES]
-            elif self.config.mask_mode == "face":
-                contours = [FACE_OVAL_INDICES]
-            elif self.config.mask_mode == "eyes_and_brows":
-                contours = [
-                    LEFT_EYE_INDICES,
-                    RIGHT_EYE_INDICES,
-                    LEFT_EYEBROW_INDICES,
-                    RIGHT_EYEBROW_INDICES,
-                ]
-            else:
-                contours = [LEFT_EYE_INDICES, RIGHT_EYE_INDICES]
+            contours = CONTOUR_MODES[self.config.mask_mode]
 
             polys = [self._get_contour_points(lm, idx) for idx in contours]
             cv2.fillPoly(mask, polys, 255)

@@ -9,6 +9,7 @@ from camera import CameraManager
 from config import (
     CAMERA_HEIGHT,
     CAMERA_WIDTH,
+    CONTOUR_MODES,
     DETECTOR_MODES,
     MAX_FACES,
     NDI_SENDER_NAME,
@@ -18,14 +19,7 @@ from config import (
     SPOUT_SENDER_NAME,
     RuntimeConfig,
 )
-from detector import (
-    FaceDetector,
-    LEFT_EYE_INDICES,
-    RIGHT_EYE_INDICES,
-    LEFT_EYEBROW_INDICES,
-    RIGHT_EYEBROW_INDICES,
-    FACE_OVAL_INDICES,
-)
+from detector import FaceDetector
 from detector_yolo import BBoxResult, YoloFaceDetector, YOLO_AVAILABLE
 from mask_generator import MaskGenerator
 from output_ndi import NDIOutput
@@ -68,6 +62,41 @@ def window_closed() -> bool:
 
 
 PREVIEW_W, PREVIEW_H = 1280, 720
+
+CONTOUR_COLORS = {
+    "eyes": [(0, 255, 0), (0, 255, 0)],
+    "face": [(0, 255, 255)],
+    "eyes_and_brows": [(0, 255, 0), (0, 255, 0), (255, 0, 255), (255, 0, 255)],
+}
+
+
+def _draw_preview_overlays(display, faces, yolo_bboxes, mask_mode, cam_w, cam_h):
+    for bbox in yolo_bboxes:
+        x1 = int(bbox.x * cam_w)
+        y1 = int(bbox.y * cam_h)
+        x2 = int((bbox.x + bbox.w) * cam_w)
+        y2 = int((bbox.y + bbox.h) * cam_h)
+        cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 0), 2)
+        cv2.putText(display, "YOLO", (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+    indices_list = CONTOUR_MODES[mask_mode]
+    colors = CONTOUR_COLORS[mask_mode]
+
+    for face in faces:
+        lm = face.landmarks
+
+        for indices, color in zip(indices_list, colors):
+            pts = lm[indices].copy()
+            pts[:, 0] *= cam_w
+            pts[:, 1] *= cam_h
+            pts = pts.astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(display, [pts], isClosed=True, color=color, thickness=2)
+
+        for idx in range(468, min(478, len(lm))):
+            x = int(lm[idx, 0] * cam_w)
+            y = int(lm[idx, 1] * cam_h)
+            cv2.circle(display, (x, y), 2, (0, 0, 255), -1)
 
 
 def _make_camera_click_handler(calibration):
@@ -258,55 +287,8 @@ def main():
 
             # Draw detection contours on the camera frame
             display = frame.copy()
-
-            # Draw YOLO bounding boxes (cyan)
-            for bbox in yolo_bboxes:
-                x1 = int(bbox.x * cam_w)
-                y1 = int(bbox.y * cam_h)
-                x2 = int((bbox.x + bbox.w) * cam_w)
-                y2 = int((bbox.y + bbox.h) * cam_h)
-                cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 0), 2)
-                cv2.putText(display, "YOLO", (x1, y1 - 6),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-
-            for face in faces:
-                lm = face.landmarks  # normalized 0-1 coords
-
-                # Choose which contours to draw based on current mode
-                if config.mask_mode == "eyes":
-                    contour_sets = [
-                        (LEFT_EYE_INDICES, (0, 255, 0)),    # green
-                        (RIGHT_EYE_INDICES, (0, 255, 0)),
-                    ]
-                elif config.mask_mode == "face":
-                    contour_sets = [
-                        (FACE_OVAL_INDICES, (0, 255, 255)),  # yellow
-                    ]
-                elif config.mask_mode == "eyes_and_brows":
-                    contour_sets = [
-                        (LEFT_EYE_INDICES, (0, 255, 0)),
-                        (RIGHT_EYE_INDICES, (0, 255, 0)),
-                        (LEFT_EYEBROW_INDICES, (255, 0, 255)),   # magenta
-                        (RIGHT_EYEBROW_INDICES, (255, 0, 255)),
-                    ]
-                else:
-                    contour_sets = [
-                        (LEFT_EYE_INDICES, (0, 255, 0)),
-                        (RIGHT_EYE_INDICES, (0, 255, 0)),
-                    ]
-
-                for indices, color in contour_sets:
-                    pts = lm[indices].copy()
-                    pts[:, 0] *= cam_w
-                    pts[:, 1] *= cam_h
-                    pts = pts.astype(np.int32).reshape(-1, 1, 2)
-                    cv2.polylines(display, [pts], isClosed=True, color=color, thickness=2)
-
-                # Draw small dots on all iris landmarks for reference
-                for idx in range(468, min(478, len(lm))):
-                    x = int(lm[idx, 0] * cam_w)
-                    y = int(lm[idx, 1] * cam_h)
-                    cv2.circle(display, (x, y), 2, (0, 0, 255), -1)  # red dots
+            _draw_preview_overlays(display, faces, yolo_bboxes,
+                                   config.mask_mode, cam_w, cam_h)
 
             total_ms = (time.perf_counter() - frame_start) * 1000.0
 
@@ -346,9 +328,6 @@ def main():
 
             # Draw projector grid window when in calibration mode
             calibration.draw_projector_grid()
-
-            # Pump pygame event loop for Spout's OpenGL context
-            spout.pump()
 
             # Keyboard handling
             key = cv2.waitKeyEx(1)

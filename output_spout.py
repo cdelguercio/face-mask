@@ -34,20 +34,14 @@ class SpoutOutput:
     def send(self, frame_bgra: np.ndarray):
         if not self.enabled:
             return
-        # BGRA from OpenCV -> RGBA for Spout, keep as numpy array (Buffer protocol)
-        frame_rgba = frame_bgra[:, :, [2, 1, 0, 3]].copy()
         self.sender.sendImage(
-            frame_rgba,
+            frame_bgra,
             self.width,
             self.height,
-            SpoutGL.enums.GL_RGBA,
+            SpoutGL.enums.GL_BGRA_EXT,
             False,
             0,
         )
-
-    def pump(self):
-        """No-op — we don't pump pygame events to avoid stealing keyboard focus from OpenCV."""
-        pass
 
     def release(self):
         if self.enabled:
