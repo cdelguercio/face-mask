@@ -52,6 +52,7 @@ class MaskGenerator:
                 mask, self.config.homography_matrix, (self.width, self.height)
             )
 
+        mask = cv2.bitwise_not(mask)
         return cv2.merge([mask, mask, mask, np.full_like(mask, 255)])
 
     def generate(self, faces: List[FaceResult]) -> np.ndarray:

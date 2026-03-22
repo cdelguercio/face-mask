@@ -242,17 +242,17 @@ def main():
                         fade = 1.0 - (elapsed_ms / config.hold_ms)
                     else:
                         fade = 0.0
-                    # Apply fade to the RGB channels of the held mask
+                    # Fade held mask toward white (pass-through)
                     mask_bgra = last_valid_mask.copy()
+                    rgb = mask_bgra[:, :, :3].astype(np.float32)
                     mask_bgra[:, :, :3] = (
-                        mask_bgra[:, :, :3].astype(np.float32) * fade
+                        rgb * fade + 255.0 * (1.0 - fade)
                     ).astype(np.uint8)
                 else:
-                    # Past hold window or no previous mask — output black
-                    mask_bgra = np.zeros(
-                        (OUTPUT_HEIGHT, OUTPUT_WIDTH, 4), dtype=np.uint8
+                    # Past hold window or no previous mask — output white (pass-through)
+                    mask_bgra = np.full(
+                        (OUTPUT_HEIGHT, OUTPUT_WIDTH, 4), 255, dtype=np.uint8
                     )
-                    mask_bgra[:, :, 3] = 255
 
             # Send to outputs — grid to projector during calibration, mask otherwise
             projector_grid = calibration.get_projector_frame()

@@ -7,6 +7,7 @@ On Windows, Python apps need explicit camera permission granted in:
 import platform
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -100,30 +101,47 @@ class CameraInfo:
     label: str  # human-readable label for the trackbar
 
 
+def _probe_camera(idx: int, backend: int, timeout_s: float = 3.0) -> Optional[CameraInfo]:
+    """Probe a single camera index with a timeout. Returns CameraInfo or None."""
+    result = [None]
+
+    def _probe():
+        cap = cv2.VideoCapture(idx, backend)
+        if cap.isOpened():
+            ret, frame = cap.read()
+            if ret:
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                backend_name = "DSHOW" if backend == cv2.CAP_DSHOW else "MSMF"
+                is_virt = _is_virtual_camera(frame)
+                tag = " (virtual)" if is_virt else ""
+                result[0] = CameraInfo(
+                    index=idx, backend=backend, backend_name=backend_name,
+                    width=w, height=h, is_virtual=is_virt,
+                    label=f"Cam {idx}{tag} [{w}x{h}]",
+                )
+            cap.release()
+
+    t = threading.Thread(target=_probe, daemon=True)
+    t.start()
+    t.join(timeout=timeout_s)
+    if t.is_alive():
+        return None  # timed out (e.g. NVIDIA virtual cam hanging)
+    return result[0]
+
+
 def discover_cameras() -> List[CameraInfo]:
-    """Scan for all available cameras."""
+    """Scan for all available cameras with per-device timeout."""
     cameras = []
-    seen_indices = set()
 
     for idx in range(10):
-        for backend, backend_name in [(cv2.CAP_DSHOW, "DSHOW"), (cv2.CAP_MSMF, "MSMF")]:
-            if idx in seen_indices:
-                break
-            cap = cv2.VideoCapture(idx, backend)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret:
-                    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    is_virt = _is_virtual_camera(frame)
-                    tag = " (virtual)" if is_virt else ""
-                    cameras.append(CameraInfo(
-                        index=idx, backend=backend, backend_name=backend_name,
-                        width=w, height=h, is_virtual=is_virt,
-                        label=f"Cam {idx}{tag} [{w}x{h}]",
-                    ))
-                    seen_indices.add(idx)
-                cap.release()
+        print(f"  probing index {idx}...", end="", flush=True)
+        info = _probe_camera(idx, cv2.CAP_DSHOW, timeout_s=3.0)
+        if info:
+            cameras.append(info)
+            print(f" found [{info.width}x{info.height}]{' (virtual)' if info.is_virtual else ''}")
+        else:
+            print(" skip")
 
     return cameras
 
