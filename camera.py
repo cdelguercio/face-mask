@@ -146,13 +146,51 @@ def discover_cameras() -> List[CameraInfo]:
     return cameras
 
 
+def _fourcc_to_str(fourcc_int: int) -> str:
+    """Convert an integer FOURCC code to a readable 4-char string."""
+    return "".join(chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4))
+
+
+def _apply_low_latency_settings(cap: cv2.VideoCapture, width: int, height: int):
+    """Configure camera for lowest latency and print what was accepted vs ignored."""
+    settings = [
+        ("Codec", cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc('M', 'J', 'P', 'G')),
+        ("Resolution W", cv2.CAP_PROP_FRAME_WIDTH, width),
+        ("Resolution H", cv2.CAP_PROP_FRAME_HEIGHT, height),
+        ("Auto-Exposure", cv2.CAP_PROP_AUTO_EXPOSURE, 0),
+        ("Autofocus", cv2.CAP_PROP_AUTOFOCUS, 0),
+        ("Buffer Size", cv2.CAP_PROP_BUFFERSIZE, 1),
+    ]
+
+    print("  Camera settings:")
+    for name, prop, requested in settings:
+        before = cap.get(prop)
+        accepted = cap.set(prop, requested)
+        after = cap.get(prop)
+
+        if prop == cv2.CAP_PROP_FOURCC:
+            before_s = _fourcc_to_str(int(before))
+            after_s = _fourcc_to_str(int(after))
+            req_s = _fourcc_to_str(int(requested))
+            if after_s == req_s:
+                print(f"    {name}: {before_s} -> {after_s} [OK]")
+            else:
+                print(f"    {name}: {before_s} -> {after_s} [WANTED {req_s} - IGNORED]")
+        else:
+            changed = abs(after - requested) < 1
+            status = "[OK]" if changed else f"[WANTED {requested} - GOT {after:.0f}]"
+            if before == after and not changed:
+                status = f"[IGNORED, stuck at {after:.0f}]"
+            print(f"    {name}: {before:.0f} -> {after:.0f} {status}")
+
+
 class CameraManager:
     """Manages camera discovery, selection, and hot-swapping.
 
     Integrates with the OpenCV window as a trackbar for live camera switching.
     """
 
-    def __init__(self, width: int = 1280, height: int = 720):
+    def __init__(self, width: int = 640, height: int = 480):
         self.req_width = width
         self.req_height = height
         self.cameras: List[CameraInfo] = []
@@ -201,11 +239,12 @@ class CameraManager:
             print(f"ERROR: Could not open camera {cam.index}")
             return False
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.req_width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.req_height)
+        _apply_low_latency_settings(cap, self.req_width, self.req_height)
         actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        print(f"Opened {cam.label} at {actual_w}x{actual_h}")
+        fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+        fourcc_str = "".join(chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4))
+        print(f"Opened {cam.label} at {actual_w}x{actual_h} [{fourcc_str}]")
 
         self.cap = cap
         self.current_idx = list_index
@@ -224,8 +263,7 @@ class CameraManager:
             if not cap.isOpened():
                 cap = cv2.VideoCapture(preferred_index)
             if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.req_width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.req_height)
+                _apply_low_latency_settings(cap, self.req_width, self.req_height)
                 self.cap = cap
                 return True
             print(f"ERROR: Could not open camera {preferred_index}")

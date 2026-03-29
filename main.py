@@ -1,3 +1,4 @@
+import argparse
 import sys
 import time
 
@@ -110,7 +111,23 @@ def _make_camera_click_handler(calibration):
     return _on_mouse
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Real-time face mask for projection")
+    parser.add_argument("--camera", type=int, default=None,
+                        help="Camera device index (auto-detect if omitted)")
+    parser.add_argument("--cam-width", type=int, default=1280,
+                        help="Camera capture width (default: 1280)")
+    parser.add_argument("--cam-height", type=int, default=720,
+                        help="Camera capture height (default: 720)")
+    parser.add_argument("--out-width", type=int, default=OUTPUT_WIDTH,
+                        help=f"Output/Spout width (default: {OUTPUT_WIDTH})")
+    parser.add_argument("--out-height", type=int, default=OUTPUT_HEIGHT,
+                        help=f"Output/Spout height (default: {OUTPUT_HEIGHT})")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     config = RuntimeConfig()
 
     # Initialize components
@@ -120,24 +137,23 @@ def main():
     # YOLO fallback detector (gracefully optional)
     yolo_detector = YoloFaceDetector(enabled=YOLO_AVAILABLE)
 
-    mask_gen = MaskGenerator(OUTPUT_WIDTH, OUTPUT_HEIGHT, config)
+    out_w, out_h = args.out_width, args.out_height
+    mask_gen = MaskGenerator(out_w, out_h, config)
 
     print("Initializing outputs...")
-    spout = SpoutOutput(SPOUT_SENDER_NAME, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+    spout = SpoutOutput(SPOUT_SENDER_NAME, out_w, out_h)
     ndi = NDIOutput(NDI_SENDER_NAME)
 
     if not spout.enabled and not ndi.enabled:
         print("WARNING: No outputs available. Running in preview-only mode.")
 
     # Camera setup — discover, open, and prepare selector
-    cam_manager = CameraManager(width=CAMERA_WIDTH, height=CAMERA_HEIGHT)
+    cam_manager = CameraManager(width=args.cam_width, height=args.cam_height)
     cam_manager.discover()
-
-    preferred = int(sys.argv[1]) if len(sys.argv) > 1 else None
-    cam_manager.open_default(preferred_index=preferred)
+    cam_manager.open_default(preferred_index=args.camera)
 
     # Calibration system
-    calibration = Calibration(OUTPUT_WIDTH, OUTPUT_HEIGHT)
+    calibration = Calibration(out_w, out_h)
 
     # AUTOSIZE prevents user from stretching the aspect ratio
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
