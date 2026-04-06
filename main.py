@@ -5,7 +5,7 @@ import time
 import cv2
 import numpy as np
 
-from calibration import Calibration
+from calibration import CAL_MODE_ARUCO, CAL_MODE_MANUAL, Calibration
 from camera import CameraManager
 from config import (
     CAMERA_HEIGHT,
@@ -175,11 +175,28 @@ def main():
     cv2.createTrackbar("YOLO Conf", WINDOW_NAME, int(yolo_detector.confidence * 100), 100,
                         lambda v: on_yolo_conf_change(v, yolo_detector))
 
+    # Calibration mode trackbar: 0=manual, 1=aruco
+    CAL_MODES = [CAL_MODE_MANUAL, CAL_MODE_ARUCO]
+    def on_cal_mode_change(val):
+        calibration.set_cal_mode(CAL_MODES[val])
+    cv2.createTrackbar("Cal Mode", WINDOW_NAME, 0, 1,
+                        on_cal_mode_change)
+
+    # ArUco grid density (cols x rows, linked slider for simplicity)
+    def on_aruco_density_change(val):
+        density = max(2, val)
+        # Keep roughly 3:2 aspect ratio for the grid
+        rows = max(2, int(density * 2 / 3))
+        calibration.set_aruco_grid_size(density, rows)
+    cv2.createTrackbar("ArUco Cols", WINDOW_NAME, 6, 12,
+                        on_aruco_density_change)
+
     # Print control legend to console
     print()
     print("=== Controls ===")
     print("Mask Mode:  0=eyes  1=face  2=eyes+brows")
     print("Detector:   0=MP+YOLO  1=MP only  2=YOLO only")
+    print("Cal Mode:   0=manual  1=aruco")
     if len(cam_manager.cameras) > 1:
         for i, cam in enumerate(cam_manager.cameras):
             print(f"Camera {i}:   {cam.label}")
@@ -187,6 +204,7 @@ def main():
 
     print("Running. Press 'q' to quit, 'c' for calibration, 'r' to reset cal.")
     print("Arrow keys nudge the calibration transform.")
+    print("In ArUco mode: 's' to capture detected markers.")
     fps_timer = time.perf_counter()
     frame_count = 0
     fps = 0.0
@@ -230,6 +248,10 @@ def main():
 
             # Feed faces to calibration for snap-to-face
             calibration.update_faces(faces)
+
+            # Run ArUco detection when in aruco calibration mode
+            cam_h, cam_w = frame.shape[:2]
+            calibration.update_aruco(frame, cam_w, cam_h)
 
             # Update the runtime config homography from calibration
             config.homography_matrix = calibration.get_homography()
@@ -325,6 +347,13 @@ def main():
             # Draw calibration overlays on the preview
             calibration.draw_camera_overlay(preview, preview_w, preview_h)
 
+            # Draw ArUco detections on the preview
+            aruco_dets = calibration.get_aruco_detections()
+            if aruco_dets:
+                calibration.aruco.draw_detections(
+                    preview, aruco_dets, cam_w, cam_h, preview_w, preview_h
+                )
+
             # Mask inset (bottom-right corner)
             inset_w, inset_h = 240, 135
             mask_inset = cv2.resize(mask_bgra[:, :, :3], (inset_w, inset_h))
@@ -355,6 +384,10 @@ def main():
                 calibration.toggle()
                 mode = "ON" if calibration.active else "OFF"
                 print(f"[Calibration] Mode {mode}")
+            elif key == ord("s"):
+                if calibration.active and calibration.cal_mode == CAL_MODE_ARUCO:
+                    cam_h_cur, cam_w_cur = frame.shape[:2]
+                    calibration.capture_aruco(cam_w_cur, cam_h_cur)
             elif key == ord("r"):
                 calibration.reset()
                 print("[Calibration] Reset — all points cleared.")
