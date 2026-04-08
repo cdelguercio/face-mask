@@ -101,13 +101,27 @@ def _draw_preview_overlays(display, faces, yolo_bboxes, mask_mode, cam_w, cam_h)
 
 
 def _make_camera_click_handler(calibration):
-    """Return a mouse callback for the camera preview window."""
+    """Return a mouse callback for the camera preview window.
+
+    In ArUco mode: left-click-drag draws a ROI, right-click clears it.
+    In manual mode: left-click places a calibration point.
+    """
     def _on_mouse(event, x, y, flags, param):
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
         x_norm = x / PREVIEW_W
         y_norm = y / PREVIEW_H
-        calibration.on_camera_click(x_norm, y_norm)
+
+        # Right-click clears ROI in ArUco mode
+        if event == cv2.EVENT_RBUTTONDOWN:
+            calibration.clear_roi()
+            return
+
+        # Try ROI handling first (consumes left-click events in ArUco mode)
+        if calibration.on_roi_mouse(event, x_norm, y_norm):
+            return
+
+        # Manual mode click-to-place
+        if event == cv2.EVENT_LBUTTONDOWN:
+            calibration.on_camera_click(x_norm, y_norm)
     return _on_mouse
 
 
@@ -168,18 +182,19 @@ def main():
                         lambda v: on_blur_change(v, config))
     cv2.createTrackbar("Dilation", WINDOW_NAME, config.dilation_pixels, 200,
                         lambda v: on_dilation_change(v, config))
-    cv2.createTrackbar("Hold ms", WINDOW_NAME, config.hold_ms, 2000,
+    cv2.createTrackbar("Hold ms", WINDOW_NAME, config.hold_ms, 10000,
                         lambda v: on_hold_change(v, config))
     cv2.createTrackbar("Detector", WINDOW_NAME, DETECTOR_MODES.index(config.detector_mode), 2,
                         lambda v: on_detector_mode_change(v, config))
     cv2.createTrackbar("YOLO Conf", WINDOW_NAME, int(yolo_detector.confidence * 100), 100,
                         lambda v: on_yolo_conf_change(v, yolo_detector))
 
-    # Calibration mode trackbar: 0=manual, 1=aruco
+    # Calibration mode trackbar: 0=manual, 1=aruco — sync with loaded state
     CAL_MODES = [CAL_MODE_MANUAL, CAL_MODE_ARUCO]
     def on_cal_mode_change(val):
         calibration.set_cal_mode(CAL_MODES[val])
-    cv2.createTrackbar("Cal Mode", WINDOW_NAME, 0, 1,
+    initial_cal_idx = CAL_MODES.index(calibration.cal_mode) if calibration.cal_mode in CAL_MODES else 0
+    cv2.createTrackbar("Cal Mode", WINDOW_NAME, initial_cal_idx, 1,
                         on_cal_mode_change)
 
     # ArUco grid density (cols x rows, linked slider for simplicity)
@@ -202,9 +217,10 @@ def main():
             print(f"Camera {i}:   {cam.label}")
     print()
 
-    print("Running. Press 'q' to quit, 'c' for calibration, 'r' to reset cal.")
-    print("Arrow keys nudge the calibration transform.")
-    print("In ArUco mode: 's' to capture detected markers.")
+    print("Running. Press 'q' to quit, 'c' for calibration.")
+    print("  'x' = clear current mode's points, 'r' = reset all")
+    print("  Arrow keys = nudge transform")
+    print("  ArUco mode: 's' = capture, drag ROI, right-click = clear ROI")
     fps_timer = time.perf_counter()
     frame_count = 0
     fps = 0.0
@@ -347,7 +363,8 @@ def main():
             # Draw calibration overlays on the preview
             calibration.draw_camera_overlay(preview, preview_w, preview_h)
 
-            # Draw ArUco detections on the preview
+            # Draw ROI and ArUco detections on the preview
+            calibration.draw_roi(preview, preview_w, preview_h)
             aruco_dets = calibration.get_aruco_detections()
             if aruco_dets:
                 calibration.aruco.draw_detections(
@@ -388,9 +405,11 @@ def main():
                 if calibration.active and calibration.cal_mode == CAL_MODE_ARUCO:
                     cam_h_cur, cam_w_cur = frame.shape[:2]
                     calibration.capture_aruco(cam_w_cur, cam_h_cur)
+            elif key == ord("x"):
+                calibration.clear_points()
             elif key == ord("r"):
                 calibration.reset()
-                print("[Calibration] Reset — all points cleared.")
+                print("[Calibration] Reset — all points and nudge cleared.")
             elif key == 2424832:  # left arrow (Windows)
                 calibration.nudge(-NUDGE_STEP, 0)
             elif key == 2555904:  # right arrow (Windows)

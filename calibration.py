@@ -76,6 +76,11 @@ class Calibration:
         self.aruco = ArucoGrid(output_width, output_height)
         self._aruco_detections: list = []  # latest frame's detections
 
+        # ROI for ArUco mode — normalized (0-1) coords, None = no ROI (use all)
+        self.roi: Optional[Tuple[float, float, float, float]] = None  # (x1, y1, x2, y2)
+        self._roi_dragging: bool = False
+        self._roi_start: Optional[Tuple[float, float]] = None
+
         # Try to load saved calibration
         self._load()
 
@@ -132,11 +137,13 @@ class Calibration:
         """Run ArUco detection on the current camera frame.
 
         Call this each frame when in aruco calibration mode.
+        Applies ROI filter if a ROI is set.
         """
         if not self.active or self.cal_mode != CAL_MODE_ARUCO:
             self._aruco_detections = []
             return
-        self._aruco_detections = self.aruco.detect(frame_bgr)
+        raw = self.aruco.detect(frame_bgr)
+        self._aruco_detections = self._filter_by_roi(raw, cam_w, cam_h)
 
     def capture_aruco(self, cam_w: int, cam_h: int):
         """Capture current ArUco detections as calibration point pairs.
@@ -168,8 +175,96 @@ class Calibration:
         return added
 
     def get_aruco_detections(self) -> list:
-        """Return the latest ArUco detections for preview drawing."""
+        """Return the latest ArUco detections (filtered by ROI if set)."""
         return self._aruco_detections
+
+    # ------------------------------------------------------------------
+    # ROI for ArUco mode
+    # ------------------------------------------------------------------
+
+    def on_roi_mouse(self, event: int, x_norm: float, y_norm: float):
+        """Handle mouse events for ROI drawing in ArUco mode.
+
+        Called from the camera preview mouse handler.
+        Returns True if the event was consumed (ArUco ROI mode).
+        """
+        if not self.active or self.cal_mode != CAL_MODE_ARUCO:
+            return False
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self._roi_dragging = True
+            self._roi_start = (x_norm, y_norm)
+            self.roi = None  # clear while dragging
+            return True
+        elif event == cv2.EVENT_MOUSEMOVE and self._roi_dragging:
+            # Live preview of the ROI rectangle
+            sx, sy = self._roi_start
+            self.roi = (min(sx, x_norm), min(sy, y_norm),
+                        max(sx, x_norm), max(sy, y_norm))
+            return True
+        elif event == cv2.EVENT_LBUTTONUP and self._roi_dragging:
+            self._roi_dragging = False
+            sx, sy = self._roi_start
+            x1, y1 = min(sx, x_norm), min(sy, y_norm)
+            x2, y2 = max(sx, x_norm), max(sy, y_norm)
+            # Require minimum size to avoid accidental tiny boxes
+            if (x2 - x1) > 0.02 and (y2 - y1) > 0.02:
+                self.roi = (x1, y1, x2, y2)
+                print(f"[Calibration] ROI set: ({x1:.2f},{y1:.2f}) -> ({x2:.2f},{y2:.2f})")
+            else:
+                self.roi = None  # too small, treat as click-to-clear
+                print("[Calibration] ROI cleared (too small or single click)")
+            return True
+
+        return False
+
+    def clear_roi(self):
+        """Remove the ROI filter."""
+        self.roi = None
+        self._roi_dragging = False
+        self._roi_start = None
+        print("[Calibration] ROI cleared")
+
+    def _filter_by_roi(self, detections: list, cam_w: int, cam_h: int) -> list:
+        """Filter ArUco detections to only those whose center is inside the ROI."""
+        if self.roi is None:
+            return detections
+
+        x1, y1, x2, y2 = self.roi
+        # ROI is in normalized coords, marker centers are in pixel coords
+        filtered = []
+        for marker_id, corners, proj_pt in detections:
+            center = corners.mean(axis=0)
+            cx_norm = center[0] / cam_w
+            cy_norm = center[1] / cam_h
+            if x1 <= cx_norm <= x2 and y1 <= cy_norm <= y2:
+                filtered.append((marker_id, corners, proj_pt))
+        return filtered
+
+    def draw_roi(self, preview: np.ndarray, preview_w: int, preview_h: int):
+        """Draw the ROI rectangle on the preview if set."""
+        if self.roi is None or not self.active or self.cal_mode != CAL_MODE_ARUCO:
+            return
+        x1, y1, x2, y2 = self.roi
+        pt1 = (int(x1 * preview_w), int(y1 * preview_h))
+        pt2 = (int(x2 * preview_w), int(y2 * preview_h))
+        # Semi-transparent overlay outside ROI
+        overlay = preview.copy()
+        cv2.rectangle(overlay, (0, 0), (preview_w, preview_h), (0, 0, 0), -1)
+        cv2.rectangle(overlay, pt1, pt2, (0, 0, 0), -1)  # cut out ROI area
+        # Darken outside ROI
+        mask = np.zeros((preview_h, preview_w), dtype=np.uint8)
+        cv2.rectangle(mask, pt1, pt2, 255, -1)
+        preview[mask == 0] = (preview[mask == 0] * 0.4).astype(np.uint8)
+        # Draw ROI border
+        cv2.rectangle(preview, pt1, pt2, (0, 255, 255), 2)
+        cv2.putText(preview, "ROI (right-click to clear)",
+                    (pt1[0], pt1[1] - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (0, 255, 255), 1)
+
+    # ------------------------------------------------------------------
+    # Face tracking
+    # ------------------------------------------------------------------
 
     def update_faces(self, faces: List[FaceResult]):
         """Feed current frame's face detections for snap-to-face."""
@@ -197,6 +292,20 @@ class Calibration:
         self._recompute()
         self._save()
 
+    def clear_points(self):
+        """Clear calibration points for the current mode only."""
+        mode = self.cal_mode
+        if mode == CAL_MODE_ARUCO:
+            self.aruco_pairs.clear()
+            print("[Calibration] ArUco points cleared.")
+        else:
+            self.manual_pairs.clear()
+            self._waiting_for_projector = False
+            self._pending_camera_pt = None
+            print("[Calibration] Manual points cleared.")
+        self._recompute()
+        self._save()
+
     def reset(self):
         """Clear all calibration data (both modes)."""
         self.manual_pairs.clear()
@@ -206,6 +315,7 @@ class Calibration:
         self.nudge_y = 0.0
         self._waiting_for_projector = False
         self._pending_camera_pt = None
+        self.roi = None
         self._save()
 
     def get_homography(self) -> Optional[np.ndarray]:
@@ -217,7 +327,8 @@ class Calibration:
         if self.active:
             if self.cal_mode == CAL_MODE_ARUCO:
                 n_det = len(self._aruco_detections)
-                return f"CAL-ARUCO: {n_det} markers | 's' to capture ({len(self.pairs)} pts)"
+                roi_tag = " [ROI]" if self.roi else " (drag ROI to filter)"
+                return f"CAL-ARUCO: {n_det} markers{roi_tag} | 's'=capture ({len(self.pairs)} pts)"
             if self._waiting_for_projector:
                 return f"CAL: click projector grid ({len(self.pairs)} pts)"
             return f"CAL: click a face ({len(self.pairs)} pts)"
