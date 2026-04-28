@@ -8,8 +8,6 @@ import numpy as np
 from calibration import CAL_MODE_ARUCO, CAL_MODE_MANUAL, Calibration
 from camera import CameraManager
 from config import (
-    CAMERA_HEIGHT,
-    CAMERA_WIDTH,
     CONTOUR_MODES,
     DETECTOR_MODES,
     MAX_FACES,
@@ -20,8 +18,7 @@ from config import (
     SPOUT_SENDER_NAME,
     RuntimeConfig,
 )
-from detector import FaceDetector
-from detector_yolo import BBoxResult, YoloFaceDetector, YOLO_AVAILABLE
+from detector_manager import FaceDetectionManager
 from mask_generator import MaskGenerator
 from output_ndi import NDIOutput
 from output_spout import SpoutOutput
@@ -50,8 +47,8 @@ def on_detector_mode_change(val, config):
     config.detector_mode = DETECTOR_MODES[val]
 
 
-def on_yolo_conf_change(val, yolo_detector):
-    yolo_detector.confidence = val / 100.0
+def on_bbox_conf_change(val, detection_manager):
+    detection_manager.set_bbox_confidence(val / 100.0)
 
 
 def window_closed() -> bool:
@@ -71,20 +68,20 @@ CONTOUR_COLORS = {
 }
 
 
-def _draw_preview_overlays(display, faces, yolo_bboxes, mask_mode, cam_w, cam_h):
-    for bbox in yolo_bboxes:
+def _draw_preview_overlays(display, detection, mask_mode, cam_w, cam_h):
+    for bbox in detection.bboxes:
         x1 = int(bbox.x * cam_w)
         y1 = int(bbox.y * cam_h)
         x2 = int((bbox.x + bbox.w) * cam_w)
         y2 = int((bbox.y + bbox.h) * cam_h)
         cv2.rectangle(display, (x1, y1), (x2, y2), (255, 255, 0), 2)
-        cv2.putText(display, "YOLO", (x1, y1 - 6),
+        cv2.putText(display, bbox.label, (x1, y1 - 6),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
     indices_list = CONTOUR_MODES[mask_mode]
     colors = CONTOUR_COLORS[mask_mode]
 
-    for face in faces:
+    for face in detection.faces:
         lm = face.landmarks
 
         for indices, color in zip(indices_list, colors):
@@ -145,11 +142,8 @@ def main():
     config = RuntimeConfig()
 
     # Initialize components
-    print("Initializing face detector...")
-    detector = FaceDetector(max_faces=MAX_FACES)
-
-    # YOLO fallback detector (gracefully optional)
-    yolo_detector = YoloFaceDetector(enabled=YOLO_AVAILABLE)
+    print("Initializing face detectors...")
+    detection_manager = FaceDetectionManager(max_faces=MAX_FACES)
 
     out_w, out_h = args.out_width, args.out_height
     mask_gen = MaskGenerator(out_w, out_h, config)
@@ -184,10 +178,12 @@ def main():
                         lambda v: on_dilation_change(v, config))
     cv2.createTrackbar("Hold ms", WINDOW_NAME, config.hold_ms, 10000,
                         lambda v: on_hold_change(v, config))
-    cv2.createTrackbar("Detector", WINDOW_NAME, DETECTOR_MODES.index(config.detector_mode), 2,
+    cv2.createTrackbar("Detector", WINDOW_NAME, DETECTOR_MODES.index(config.detector_mode),
+                        len(DETECTOR_MODES) - 1,
                         lambda v: on_detector_mode_change(v, config))
-    cv2.createTrackbar("YOLO Conf", WINDOW_NAME, int(yolo_detector.confidence * 100), 100,
-                        lambda v: on_yolo_conf_change(v, yolo_detector))
+    cv2.createTrackbar("Box Conf", WINDOW_NAME,
+                        int(detection_manager.get_bbox_confidence() * 100), 100,
+                        lambda v: on_bbox_conf_change(v, detection_manager))
 
     # Calibration mode trackbar: 0=manual, 1=aruco — sync with loaded state
     CAL_MODES = [CAL_MODE_MANUAL, CAL_MODE_ARUCO]
@@ -210,7 +206,9 @@ def main():
     print()
     print("=== Controls ===")
     print("Mask Mode:  0=eyes  1=face  2=eyes+brows")
-    print("Detector:   0=MP+YOLO  1=MP only  2=YOLO only")
+    print("Detector:   " + "  ".join(
+        f"{i}={mode.upper()}" for i, mode in enumerate(DETECTOR_MODES)
+    ))
     print("Cal Mode:   0=manual  1=aruco")
     if len(cam_manager.cameras) > 1:
         for i, cam in enumerate(cam_manager.cameras):
@@ -254,24 +252,12 @@ def main():
 
             frame_start = time.perf_counter()
 
-            # Detect faces based on detector mode
-            faces = []
-            yolo_bboxes = []
-            mode = config.detector_mode
-
             detect_start = time.perf_counter()
-            if mode == "mp+yolo":
-                faces = detector.detect(frame)
-                if not faces:
-                    yolo_bboxes = yolo_detector.detect(frame)
-            elif mode == "mp":
-                faces = detector.detect(frame)
-            elif mode == "yolo":
-                yolo_bboxes = yolo_detector.detect(frame)
+            detection = detection_manager.detect(frame, config.detector_mode)
             detect_ms = (time.perf_counter() - detect_start) * 1000.0
 
             # Feed faces to calibration for snap-to-face
-            calibration.update_faces(faces)
+            calibration.update_faces(detection.faces)
 
             # Run ArUco detection when in aruco calibration mode
             cam_h, cam_w = frame.shape[:2]
@@ -281,14 +267,14 @@ def main():
             config.homography_matrix = calibration.get_homography()
 
             # Generate mask based on what was detected
-            if faces:
+            if detection.faces:
                 # MediaPipe landmarks available — use normal mode
-                mask_bgra = mask_gen.generate(faces)
+                mask_bgra = mask_gen.generate(detection.faces)
                 last_valid_mask = mask_bgra.copy()
                 tracking_lost_time = None
-            elif yolo_bboxes:
+            elif detection.bboxes:
                 # YOLO fallback — head ellipse from bounding box
-                mask_bgra = mask_gen.generate_from_bbox(yolo_bboxes)
+                mask_bgra = mask_gen.generate_from_bbox(detection.bboxes)
                 last_valid_mask = mask_bgra.copy()
                 tracking_lost_time = None
             else:
@@ -334,10 +320,8 @@ def main():
             cam_h, cam_w = frame.shape[:2]
 
             # Determine detection source label for status bar
-            if faces:
-                detect_src = "MP"
-            elif yolo_bboxes:
-                detect_src = "YOLO"
+            if detection.found:
+                detect_src = detection.source
             elif last_valid_mask is not None and tracking_lost_time is not None:
                 elapsed_ms = (time.perf_counter() - tracking_lost_time) * 1000.0
                 if elapsed_ms < config.hold_ms:
@@ -349,15 +333,14 @@ def main():
 
             # Draw detection contours on the camera frame
             display = frame.copy()
-            _draw_preview_overlays(display, faces, yolo_bboxes,
-                                   config.mask_mode, cam_w, cam_h)
+            _draw_preview_overlays(display, detection, config.mask_mode, cam_w, cam_h)
 
             total_ms = (time.perf_counter() - frame_start) * 1000.0
 
             # Status bar at top
             cam_label = cam_manager.get_camera_label()
             cal_status = calibration.get_status()
-            n_detect = len(faces) if faces else len(yolo_bboxes)
+            n_detect = len(detection.faces) if detection.faces else len(detection.bboxes)
             status = (f"{n_detect} [{detect_src}] | {config.mask_mode} | "
                       f"det:{detect_ms:.0f}ms tot:{total_ms:.0f}ms | "
                       f"{fps:.0f} FPS | {cal_status}")
@@ -432,7 +415,7 @@ def main():
     finally:
         print("Cleaning up...")
         cam_manager.release()
-        detector.close()
+        detection_manager.close()
         spout.release()
         ndi.release()
         cv2.destroyAllWindows()

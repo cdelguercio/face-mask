@@ -21,6 +21,9 @@ python -m venv .venv
 # Install dependencies
 pip install opencv-python mediapipe numpy ultralytics pygame PyOpenGL SpoutGL
 
+# Optional SCRFD backend
+pip install insightface onnxruntime-gpu
+
 # Install PyTorch with CUDA (for GPU-accelerated YOLO)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 
@@ -45,7 +48,7 @@ python main.py 3         # use camera index 3
 
 ## Controls
 
-- UI trackbars: Mask Mode (eyes/face/eyes+brows), Blur, Dilation, Hold ms, Detector (MP+YOLO/MP/YOLO), YOLO Confidence, Camera selector
+- UI trackbars: Mask Mode (eyes/face/eyes+brows), Blur, Dilation, Hold ms, Detector (MP+SCRFD+YOLO/MP+SCRFD/MP+YOLO/MP/SCRFD/YOLO), Box Confidence, Camera selector
 - `c` — toggle calibration mode
 - `r` — reset calibration
 - Arrow keys — nudge calibration transform
@@ -66,6 +69,8 @@ python main.py 3         # use camera index 3
 - `main.py` — main loop, UI, preview rendering
 - `detector.py` — MediaPipe face landmark detection (CPU)
 - `detector_yolo.py` — YOLOv12 face detection (GPU/CUDA)
+- `detector_scrfd.py` — SCRFD face detection via InsightFace/ONNX Runtime
+- `detector_manager.py` — detector routing and fallback chains
 - `mask_generator.py` — generates white-on-black mask from detections
 - `calibration.py` — camera-to-projector homography with persistence
 - `camera.py` — camera discovery, permissions, hot-swap

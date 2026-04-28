@@ -25,7 +25,7 @@ MAX_FACES = 1
 NUDGE_STEP = 5  # pixels per arrow-key press
 
 
-DETECTOR_MODES = ["mp+yolo", "mp", "yolo"]
+DETECTOR_MODES = ["mp+scrfd+yolo", "mp+scrfd", "mp+yolo", "mp", "scrfd", "yolo"]
 
 
 from detector import (
@@ -52,7 +52,7 @@ CONTOUR_MODES = {
 class RuntimeConfig:
     """Mutable runtime configuration, updated by GUI trackbars."""
     mask_mode: str = "eyes"  # "eyes", "face", "eyes_and_brows"
-    detector_mode: str = "yolo"  # "mp+yolo", "mp", "yolo"
+    detector_mode: str = "mp+scrfd+yolo"
     blur_radius: int = DEFAULT_BLUR_RADIUS
     dilation_pixels: int = DEFAULT_DILATION_PIXELS
     # v2: camera-to-projector homography transform

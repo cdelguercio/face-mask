@@ -8,10 +8,11 @@ and YoloFaceDetector.detect() returns an empty list.
 """
 
 import os
-from dataclasses import dataclass
 from typing import List
 
 import numpy as np
+
+from detector_types import BBoxResult
 
 _MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -24,19 +25,6 @@ try:
 except ImportError:
     YOLO_AVAILABLE = False
     _DEVICE = "cpu"
-
-
-@dataclass
-class BBoxResult:
-    """Detection result for a single face bounding box (normalized 0-1).
-
-    x, y: top-left corner of the bounding box
-    w, h: width and height of the bounding box
-    """
-    x: float
-    y: float
-    w: float
-    h: float
 
 
 class YoloFaceDetector:
@@ -116,6 +104,6 @@ class YoloFaceDetector:
                 by = float(y1 / h)
                 bw = float((x2 - x1) / w)
                 bh = float((y2 - y1) / h)
-                faces.append(BBoxResult(x=bx, y=by, w=bw, h=bh))
+                faces.append(BBoxResult(x=bx, y=by, w=bw, h=bh, label="YOLO"))
 
         return faces

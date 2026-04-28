@@ -5,7 +5,7 @@ import numpy as np
 
 from config import CONTOUR_MODES, RuntimeConfig
 from detector import FaceResult
-from detector_yolo import BBoxResult
+from detector_types import BBoxResult
 
 
 class MaskGenerator:

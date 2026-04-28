@@ -5,3 +5,6 @@ SpoutGL>=0.0.4
 #ndi-python>=5.0.0
 PyOpenGL>=3.1.0
 pygame>=2.5.0
+# Optional SCRFD backend:
+# insightface>=0.7.3
+# onnxruntime-gpu>=1.16.0
