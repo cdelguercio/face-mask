@@ -241,8 +241,16 @@ def main():
 
             ret, frame = cam_manager.read()
             if not ret:
-                print("Camera read failed.")
-                break
+                # Show "no camera" placeholder and keep looping
+                placeholder = np.zeros((PREVIEW_H, PREVIEW_W, 3), dtype=np.uint8)
+                msg = "No camera — waiting for reconnect..."
+                cv2.putText(placeholder, msg, (PREVIEW_W // 2 - 250, PREVIEW_H // 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                cv2.imshow(WINDOW_NAME, placeholder)
+                key = cv2.waitKeyEx(100)  # slower polling when no camera
+                if key == ord("q") or window_closed():
+                    break
+                continue
 
             frame_start = time.perf_counter()
 

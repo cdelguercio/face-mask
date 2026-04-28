@@ -131,16 +131,27 @@ def _probe_camera(idx: int, backend: int, timeout_s: float = 3.0) -> Optional[Ca
 
 
 def discover_cameras() -> List[CameraInfo]:
-    """Scan for all available cameras with per-device timeout."""
+    """Scan for available cameras with per-device timeout.
+
+    Stops early after 3 consecutive failures to avoid hanging on
+    problematic virtual camera drivers.
+    """
     cameras = []
+    consecutive_fails = 0
 
     for idx in range(10):
+        if consecutive_fails >= 3:
+            print(f"  skipping indices {idx}-9 (3 consecutive failures)")
+            break
+
         print(f"  probing index {idx}...", end="", flush=True)
         info = _probe_camera(idx, cv2.CAP_DSHOW, timeout_s=3.0)
         if info:
             cameras.append(info)
+            consecutive_fails = 0
             print(f" found [{info.width}x{info.height}]{' (virtual)' if info.is_virtual else ''}")
         else:
+            consecutive_fails += 1
             print(" skip")
 
     return cameras
@@ -187,8 +198,11 @@ def _apply_low_latency_settings(cap: cv2.VideoCapture, width: int, height: int):
 class CameraManager:
     """Manages camera discovery, selection, and hot-swapping.
 
-    Integrates with the OpenCV window as a trackbar for live camera switching.
+    Handles camera disconnection gracefully and periodically rescans
+    for new cameras.
     """
+
+    RESCAN_INTERVAL = 3.0  # seconds between rescan attempts when disconnected
 
     def __init__(self, width: int = 640, height: int = 480):
         self.req_width = width
@@ -197,6 +211,10 @@ class CameraManager:
         self.current_idx: int = 0  # index into self.cameras list
         self.cap: Optional[cv2.VideoCapture] = None
         self._pending_switch: Optional[int] = None
+        self._disconnected: bool = False
+        self._last_rescan: float = 0.0
+        self._consecutive_failures: int = 0
+        self._window_name: Optional[str] = None
 
     def discover(self) -> List[CameraInfo]:
         """Scan for cameras. Call before attach_to_window."""
@@ -211,8 +229,9 @@ class CameraManager:
                 _print_permission_help(hw_devices)
                 _open_windows_camera_settings()
             else:
-                print("\nERROR: No cameras found. Connect a webcam and try again.")
-            sys.exit(1)
+                print("\nWARNING: No cameras found. Will keep scanning...")
+            self._disconnected = True
+            return self.cameras
 
         real = [c for c in self.cameras if not c.is_virtual]
         print(f"Found {len(self.cameras)} camera(s) "
@@ -252,6 +271,10 @@ class CameraManager:
 
     def open_default(self, preferred_index: Optional[int] = None) -> bool:
         """Open the best default camera (first non-virtual, or preferred)."""
+        if not self.cameras:
+            self._disconnected = True
+            return False
+
         if preferred_index is not None:
             # Find it in our list
             for i, cam in enumerate(self.cameras):
@@ -266,8 +289,9 @@ class CameraManager:
                 _apply_low_latency_settings(cap, self.req_width, self.req_height)
                 self.cap = cap
                 return True
-            print(f"ERROR: Could not open camera {preferred_index}")
-            sys.exit(1)
+            print(f"WARNING: Could not open camera {preferred_index}, will keep trying...")
+            self._disconnected = True
+            return False
 
         # Auto-select first non-virtual
         for i, cam in enumerate(self.cameras):
@@ -283,6 +307,7 @@ class CameraManager:
 
     def attach_to_window(self, window_name: str):
         """Add a camera selector trackbar to an OpenCV window."""
+        self._window_name = window_name
         if len(self.cameras) <= 1:
             return  # no point showing selector for one camera
 
@@ -306,13 +331,101 @@ class CameraManager:
         return False
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """Read a frame from the current camera."""
-        if self.cap is None:
+        """Read a frame from the current camera.
+
+        Handles disconnection: after several consecutive failures,
+        marks the camera as disconnected and triggers periodic rescan.
+        """
+        if self._disconnected or self.cap is None:
+            self._try_recover()
             return False, None
-        return self.cap.read()
+
+        try:
+            ret, frame = self.cap.read()
+        except Exception:
+            ret, frame = False, None
+
+        if not ret:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 10:
+                print("[Camera] Lost connection — will attempt recovery...")
+                self._disconnected = True
+                if self.cap is not None:
+                    try:
+                        self.cap.release()
+                    except Exception:
+                        pass
+                    self.cap = None
+            return False, None
+
+        self._consecutive_failures = 0
+        return True, frame
+
+    def _try_recover(self):
+        """Attempt to reconnect to the current camera or find a new one."""
+        import time as _time
+        now = _time.perf_counter()
+        if now - self._last_rescan < self.RESCAN_INTERVAL:
+            return
+        self._last_rescan = now
+
+        # First try reopening the same camera
+        if self.current_idx < len(self.cameras):
+            cam = self.cameras[self.current_idx]
+            cap = cv2.VideoCapture(cam.index, cam.backend)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    _apply_low_latency_settings(cap, self.req_width, self.req_height)
+                    self.cap = cap
+                    self._disconnected = False
+                    self._consecutive_failures = 0
+                    print(f"[Camera] Reconnected to {cam.label}")
+                    return
+                cap.release()
+
+        # Rescan for any available cameras (maybe a new one was plugged in)
+        new_cameras = discover_cameras()
+        if not new_cameras:
+            return
+
+        # Check if there are new cameras we haven't seen
+        old_indices = {c.index for c in self.cameras}
+        new_ones = [c for c in new_cameras if c.index not in old_indices]
+        if new_ones:
+            print(f"[Camera] Found {len(new_ones)} new camera(s):")
+            for c in new_ones:
+                print(f"  {c.label}")
+
+        self.cameras = new_cameras
+        # Update trackbar if we have a window
+        if self._window_name:
+            try:
+                cv2.setTrackbarMax("Camera", self._window_name, max(0, len(self.cameras) - 1))
+            except cv2.error:
+                pass
+
+        # Try to open any non-virtual camera
+        for i, cam in enumerate(self.cameras):
+            if not cam.is_virtual:
+                if self.open_camera(i):
+                    self._disconnected = False
+                    self._consecutive_failures = 0
+                    return
+        # Try any camera at all
+        if self.cameras:
+            if self.open_camera(0):
+                self._disconnected = False
+                self._consecutive_failures = 0
+
+    @property
+    def is_connected(self) -> bool:
+        return not self._disconnected and self.cap is not None
 
     def get_camera_label(self) -> str:
         """Get the label of the currently active camera."""
+        if self._disconnected:
+            return "DISCONNECTED"
         if 0 <= self.current_idx < len(self.cameras):
             return self.cameras[self.current_idx].label
         return "Unknown"
