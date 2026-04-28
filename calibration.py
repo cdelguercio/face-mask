@@ -367,6 +367,10 @@ class Calibration:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
             )
 
+        # Draw projector outline in camera space (inverse homography)
+        if self.active and self.homography is not None:
+            self._draw_projector_outline(preview, preview_w, preview_h)
+
     def _render_grid(self, w: int, h: int) -> np.ndarray:
         """Render the projector grid at the given resolution."""
         grid = np.zeros((h, w, 3), dtype=np.uint8)
@@ -461,6 +465,47 @@ class Calibration:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _draw_projector_outline(self, preview: np.ndarray, preview_w: int, preview_h: int):
+        """Draw the projector display boundary in camera space using the inverse homography."""
+        try:
+            H_inv = np.linalg.inv(self.homography)
+        except np.linalg.LinAlgError:
+            return
+
+        # Projector corners in normalized coords (0-1)
+        proj_corners = np.array([
+            [0, 0], [1, 0], [1, 1], [0, 1]
+        ], dtype=np.float32)
+
+        # Convert to output pixel coords for the homography
+        proj_px = proj_corners.copy()
+        proj_px[:, 0] *= self.output_width
+        proj_px[:, 1] *= self.output_height
+
+        # Apply inverse homography to get camera pixel coords
+        proj_px_h = np.hstack([proj_px, np.ones((4, 1), dtype=np.float32)])
+        cam_px_h = (H_inv @ proj_px_h.T).T
+        # Perspective divide
+        cam_px = cam_px_h[:, :2] / cam_px_h[:, 2:3]
+
+        # Convert from output-space to normalized, then to preview coords
+        cam_norm = cam_px.copy()
+        cam_norm[:, 0] /= self.output_width
+        cam_norm[:, 1] /= self.output_height
+        cam_preview = cam_norm.copy()
+        cam_preview[:, 0] *= preview_w
+        cam_preview[:, 1] *= preview_h
+
+        pts = cam_preview.astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(preview, [pts], isClosed=True, color=(0, 0, 255), thickness=2)
+
+        # Label corners
+        labels = ["TL", "TR", "BR", "BL"]
+        for i, label in enumerate(labels):
+            x, y = int(cam_preview[i, 0]), int(cam_preview[i, 1])
+            cv2.putText(preview, label, (x + 5, y - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
 
     def _snap_to_face(self, click_x: float, click_y: float) -> Optional[Tuple[float, float]]:
         """Find the nearest detected face center to the click point.
