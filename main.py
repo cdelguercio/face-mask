@@ -59,6 +59,23 @@ def window_closed() -> bool:
         return True
 
 
+def print_opencv_gui_help(error: cv2.error):
+    print()
+    print("=" * 70)
+    print("OpenCV GUI support is unavailable")
+    print("=" * 70)
+    print()
+    print("This usually means opencv-python-headless is installed in this venv.")
+    print("This app needs the GUI-enabled contrib build for preview windows and ArUco.")
+    print()
+    print("Fix:")
+    print("  pip uninstall -y opencv-python-headless opencv-python")
+    print("  pip install --force-reinstall opencv-contrib-python")
+    print()
+    print(f"Original OpenCV error: {error}")
+    print()
+
+
 PREVIEW_W, PREVIEW_H = 1280, 720
 
 CONTOUR_COLORS = {
@@ -164,7 +181,15 @@ def main():
     calibration = Calibration(out_w, out_h)
 
     # AUTOSIZE prevents user from stretching the aspect ratio
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
+    try:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
+    except cv2.error as e:
+        print_opencv_gui_help(e)
+        cam_manager.release()
+        detection_manager.close()
+        spout.release()
+        ndi.release()
+        sys.exit(1)
     cv2.setMouseCallback(WINDOW_NAME, _make_camera_click_handler(calibration))
 
     # Camera selector trackbar

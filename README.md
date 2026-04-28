@@ -19,10 +19,23 @@ python -m venv .venv
 .venv\Scripts\activate
 
 # Install dependencies
-pip install opencv-python mediapipe numpy ultralytics pygame PyOpenGL SpoutGL
+pip install opencv-contrib-python mediapipe numpy ultralytics pygame PyOpenGL SpoutGL
 
 # Optional SCRFD backend
+# First grab MSVC (latest) and Windows SDK from https://visualstudio.microsoft.com/visual-cpp-build-tools/
 pip install insightface onnxruntime-gpu
+
+# Native CUDA runtime for SCRFD GPU acceleration
+# 1. Install NVIDIA CUDA Toolkit 12.x from https://developer.nvidia.com/cuda-downloads
+# 2. Install NVIDIA cuDNN 9.x for CUDA 12.x from https://developer.nvidia.com/cudnn
+# 3. Add these folders to your Windows PATH, adjusting version paths as needed:
+#    C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.x\bin
+#    <your cuDNN install>\bin
+# 4. Restart the terminal, then verify the DLLs are discoverable:
+#    where cublasLt64_12.dll
+#    where cudnn64_9.dll
+# 5. Verify ONNX Runtime can use CUDA:
+#    python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 
 # Install PyTorch with CUDA (for GPU-accelerated YOLO)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
@@ -38,6 +51,17 @@ Settings > Privacy & Security > Camera:
 1. "Camera access" master toggle — ON
 2. "Let desktop apps access your camera" — ON
 3. Find python3.XX.exe and enable it
+
+## OpenCV GUI Troubleshooting
+
+If startup fails at `cv2.namedWindow` with "The function is not implemented",
+your environment is probably importing `opencv-python-headless`. Remove the
+conflicting wheels and reinstall the GUI contrib build:
+
+```bash
+pip uninstall -y opencv-python-headless opencv-python
+pip install --force-reinstall opencv-contrib-python
+```
 
 ## Usage
 
