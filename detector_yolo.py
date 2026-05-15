@@ -51,6 +51,7 @@ class YoloFaceDetector:
         self.enabled = enabled
         self.confidence = confidence
         self._model = None
+        self.provider = "disabled"
 
         if not YOLO_AVAILABLE:
             if enabled:
@@ -71,10 +72,12 @@ class YoloFaceDetector:
             print(f"[YOLO] Loading model '{model_path}' on {_DEVICE}...")
             self._model = YOLO(model_path)
             self._model.to(_DEVICE)
+            self.provider = _DEVICE
             print(f"[YOLO] Model loaded on {_DEVICE}.")
         except Exception as e:
             print(f"[YOLO] Failed to load model: {e}")
             self.enabled = False
+            self.provider = "failed"
 
     def detect(self, frame_bgr: np.ndarray) -> List[BBoxResult]:
         """Run YOLO face detection on a BGR frame.

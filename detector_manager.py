@@ -55,6 +55,12 @@ class FaceDetectionManager:
     def get_bbox_confidence(self) -> float:
         return self._bbox_confidence
 
+    def get_provider_label(self, name: str) -> str:
+        detector = self._bbox_detectors.get(name)
+        if detector is None:
+            return "not loaded"
+        return getattr(detector, "provider", "unknown")
+
     def close(self):
         if self._mp is not None:
             self._mp.close()

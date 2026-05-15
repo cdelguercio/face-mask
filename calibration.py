@@ -95,14 +95,14 @@ class Calibration:
     # Public API
     # ------------------------------------------------------------------
 
-    def toggle(self):
+    def toggle(self, show_projector_window: bool = True):
         """Toggle calibration mode on/off."""
         self.active = not self.active
         if self.active:
             self._waiting_for_projector = False
             self._pending_camera_pt = None
             self._aruco_detections = []
-            if self.cal_mode == CAL_MODE_MANUAL:
+            if show_projector_window and self.cal_mode == CAL_MODE_MANUAL:
                 cv2.namedWindow(GRID_WINDOW_NAME, cv2.WINDOW_NORMAL)
                 cv2.resizeWindow(GRID_WINDOW_NAME, 960, 540)
                 cv2.setMouseCallback(GRID_WINDOW_NAME, self._on_projector_click)
@@ -116,18 +116,18 @@ class Calibration:
             except cv2.error:
                 pass
 
-    def set_cal_mode(self, mode: str):
+    def set_cal_mode(self, mode: str, show_projector_window: bool = True):
         """Switch between 'manual' and 'aruco' calibration sub-modes."""
         if mode == self.cal_mode:
             return
         was_active = self.active
         if was_active:
-            self.toggle()  # turn off
+            self.toggle(show_projector_window=show_projector_window)  # turn off
         self.cal_mode = mode
         # Invalidate cached aruco grid when switching
         self.aruco._grid_image = None
         if was_active:
-            self.toggle()  # turn back on in new mode
+            self.toggle(show_projector_window=show_projector_window)  # turn back on in new mode
 
     def set_aruco_grid_size(self, cols: int, rows: int):
         """Update ArUco grid density."""
@@ -426,6 +426,12 @@ class Calibration:
         grid_bgr = self._render_grid(self.output_width, self.output_height)
         return cv2.cvtColor(grid_bgr, cv2.COLOR_BGR2BGRA)
 
+    def get_projector_preview(self, width: int, height: int) -> np.ndarray:
+        """Return a BGR projector preview for the control UI."""
+        if self.active and self.cal_mode == CAL_MODE_ARUCO:
+            return cv2.resize(self.aruco.get_grid_bgra()[:, :, :3], (width, height))
+        return self._render_grid(width, height)
+
     def draw_projector_grid(self):
         """Draw and show the projector coordinate grid window (scaled for clicking).
 
@@ -454,6 +460,22 @@ class Calibration:
         self.pairs.append(PointPair(
             camera_pt=self._pending_camera_pt,
             projector_pt=(proj_x, proj_y),
+        ))
+
+        self._waiting_for_projector = False
+        self._pending_camera_pt = None
+
+        self._recompute()
+        self._save()
+
+    def on_projector_click(self, x_norm: float, y_norm: float):
+        """Handle a normalized projector-space click from a GUI preview."""
+        if not self._waiting_for_projector or self._pending_camera_pt is None:
+            return
+
+        self.pairs.append(PointPair(
+            camera_pt=self._pending_camera_pt,
+            projector_pt=(x_norm, y_norm),
         ))
 
         self._waiting_for_projector = False

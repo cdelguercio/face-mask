@@ -242,32 +242,69 @@ class CameraManager:
         return self.cameras
 
     def open_camera(self, list_index: int) -> bool:
-        """Open camera by index into self.cameras list."""
+        """Open camera by index into self.cameras list.
+
+        Any failure (including segfaults inside virtual-camera drivers that
+        only raise as Python exceptions) leaves the manager in a consistent
+        disconnected state so the recovery loop can take over.
+        """
         if list_index < 0 or list_index >= len(self.cameras):
             return False
 
         cam = self.cameras[list_index]
 
-        # Release current camera
+        # Release current camera defensively — buggy virtual cam drivers
+        # sometimes raise here, but we still want to proceed to open the
+        # next camera rather than leave the manager in a half-released state.
         if self.cap is not None:
-            self.cap.release()
+            try:
+                self.cap.release()
+            except Exception as e:
+                print(f"[Camera] release() raised: {e}")
             self.cap = None
 
-        cap = cv2.VideoCapture(cam.index, cam.backend)
-        if not cap.isOpened():
-            print(f"ERROR: Could not open camera {cam.index}")
+        try:
+            cap = cv2.VideoCapture(cam.index, cam.backend)
+        except Exception as e:
+            print(f"[Camera] VideoCapture({cam.index}) raised: {e}")
+            self._disconnected = True
             return False
 
-        _apply_low_latency_settings(cap, self.req_width, self.req_height)
-        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
-        fourcc_str = "".join(chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4))
-        print(f"Opened {cam.label} at {actual_w}x{actual_h} [{fourcc_str}]")
+        if not cap.isOpened():
+            print(f"ERROR: Could not open camera {cam.index}")
+            self._disconnected = True
+            return False
+
+        try:
+            _apply_low_latency_settings(cap, self.req_width, self.req_height)
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fourcc_int = int(cap.get(cv2.CAP_PROP_FOURCC))
+            fourcc_str = "".join(chr((fourcc_int >> (8 * i)) & 0xFF) for i in range(4))
+            print(f"Opened {cam.label} at {actual_w}x{actual_h} [{fourcc_str}]")
+        except Exception as e:
+            print(f"[Camera] Failed to apply settings on {cam.label}: {e}")
+            try:
+                cap.release()
+            except Exception:
+                pass
+            self._disconnected = True
+            return False
 
         self.cap = cap
         self.current_idx = list_index
+        self._disconnected = False
+        self._consecutive_failures = 0
         return True
+
+    def request_switch(self, list_index: int):
+        """Queue a camera switch to be applied by the main loop.
+
+        Called from GUI callbacks; the main loop drains this via check_switch()
+        before its next cap.read() to avoid racing release/set against read.
+        """
+        if 0 <= list_index < len(self.cameras) and list_index != self.current_idx:
+            self._pending_switch = list_index
 
     def open_default(self, preferred_index: Optional[int] = None) -> bool:
         """Open the best default camera (first non-virtual, or preferred)."""
@@ -342,7 +379,11 @@ class CameraManager:
 
         try:
             ret, frame = self.cap.read()
-        except Exception:
+        except Exception as e:
+            # OpenCV can raise from inside the camera driver (virtual cams
+            # are particularly prone to this during teardown). Treat any
+            # exception as a read failure and let the recovery loop handle it.
+            print(f"[Camera] read() raised: {e}")
             ret, frame = False, None
 
         if not ret:

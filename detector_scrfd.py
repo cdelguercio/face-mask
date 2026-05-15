@@ -5,6 +5,7 @@ is intentionally optional: if insightface/onnxruntime are not installed, the
 detector disables itself and returns no boxes.
 """
 
+import os
 from typing import List
 
 import numpy as np
@@ -22,6 +23,122 @@ except ImportError:
     SCRFD_AVAILABLE = False
 
 
+_DLL_DIR_HANDLES = []
+
+
+def _existing_bin_dir(root: str | None) -> str | None:
+    if not root:
+        return None
+    path = os.path.join(root, "bin")
+    return path if os.path.isdir(path) else None
+
+
+def _candidate_cuda_bin_dirs() -> list[str]:
+    candidates = [
+        _existing_bin_dir(os.environ.get("CUDA_PATH")),
+        _existing_bin_dir(os.environ.get("CUDA_HOME")),
+    ]
+
+    for key, value in os.environ.items():
+        if key.startswith("CUDA_PATH_V"):
+            candidates.append(_existing_bin_dir(value))
+
+    roots = [
+        os.path.join(
+            os.environ.get("ProgramFiles", r"C:\Program Files"),
+            "NVIDIA GPU Computing Toolkit",
+            "CUDA",
+        )
+    ]
+    for root in roots:
+        if os.path.isdir(root):
+            for version in os.listdir(root):
+                candidates.append(os.path.join(root, version, "bin"))
+
+    result = []
+    for path in candidates:
+        if path and os.path.isdir(path) and path not in result:
+            result.append(path)
+    return result
+
+
+def _candidate_cudnn_bin_dirs() -> list[str]:
+    candidates = [
+        _existing_bin_dir(os.environ.get("CUDNN_PATH")),
+        _existing_bin_dir(os.environ.get("CUDNN_HOME")),
+        _existing_bin_dir(os.environ.get("CUDNN_ROOT")),
+    ]
+
+    for path in os.environ.get("PATH", "").split(os.pathsep):
+        if path and os.path.isdir(path):
+            candidates.append(path)
+
+    nvidia_cudnn_root = os.path.join(
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        "NVIDIA",
+        "CUDNN",
+    )
+    cuda_version = None
+    cuda_root = os.environ.get("CUDA_PATH") or os.environ.get("CUDA_HOME")
+    if cuda_root:
+        cuda_version = os.path.basename(cuda_root).lstrip("v")
+
+    if os.path.isdir(nvidia_cudnn_root):
+        for cudnn_version in os.listdir(nvidia_cudnn_root):
+            cudnn_root = os.path.join(nvidia_cudnn_root, cudnn_version)
+            if not os.path.isdir(cudnn_root):
+                continue
+
+            if cuda_version:
+                candidates.append(os.path.join(cudnn_root, "bin", cuda_version, "x64"))
+
+            bin_root = os.path.join(cudnn_root, "bin")
+            if os.path.isdir(bin_root):
+                for root, _, files in os.walk(bin_root):
+                    if "cudnn64_9.dll" in files:
+                        candidates.append(root)
+
+    result = []
+    for path in candidates:
+        if path and os.path.isdir(path) and path not in result:
+            result.append(path)
+    return result
+
+
+def _add_dll_dir(path: str):
+    """Register a Windows DLL directory for this Python process."""
+    if os.name != "nt" or not hasattr(os, "add_dll_directory"):
+        return
+    try:
+        _DLL_DIR_HANDLES.append(os.add_dll_directory(path))
+    except OSError:
+        pass
+
+
+def _find_dll(name: str, search_dirs: list[str]) -> str | None:
+    for directory in search_dirs:
+        candidate = os.path.join(directory, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _configure_cuda_dll_search() -> tuple[bool, list[str]]:
+    """Make CUDA/cuDNN DLLs visible before ONNX Runtime creates sessions."""
+    cuda_dirs = _candidate_cuda_bin_dirs()
+    cudnn_dirs = _candidate_cudnn_bin_dirs()
+    for directory in cuda_dirs + cudnn_dirs:
+        _add_dll_dir(directory)
+
+    missing = []
+    if not _find_dll("cublasLt64_12.dll", cuda_dirs + cudnn_dirs):
+        missing.append("cublasLt64_12.dll")
+    if not _find_dll("cudnn64_9.dll", cudnn_dirs + cuda_dirs):
+        missing.append("cudnn64_9.dll")
+
+    return not missing, missing
+
+
 class ScrfdFaceDetector:
     """Face detector backed by InsightFace SCRFD."""
 
@@ -35,6 +152,7 @@ class ScrfdFaceDetector:
         self.enabled = enabled
         self.confidence = confidence
         self._app = None
+        self.provider = "disabled"
 
         if not SCRFD_AVAILABLE:
             if enabled:
@@ -50,22 +168,37 @@ class ScrfdFaceDetector:
 
         try:
             available_providers = ort.get_available_providers()
-            providers = [
-                p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                if p in available_providers
-            ]
+            cuda_ready, missing_cuda_dlls = _configure_cuda_dll_search()
+            use_cuda = (
+                "CUDAExecutionProvider" in available_providers
+                and cuda_ready
+            )
+            providers = ["CPUExecutionProvider"]
+            ctx_id = -1
+            if use_cuda:
+                providers.insert(0, "CUDAExecutionProvider")
+                ctx_id = 0
+            elif "CUDAExecutionProvider" in available_providers:
+                print(
+                    "[SCRFD] CUDA provider is installed, but GPU runtime DLLs "
+                    f"are missing: {', '.join(missing_cuda_dlls)}. "
+                    "Install CUDA 12.x and cuDNN 9.x, then restart the terminal."
+                )
+
             print(f"[SCRFD] Loading InsightFace model '{model_name}'...")
             self._app = FaceAnalysis(
                 name=model_name,
                 allowed_modules=["detection"],
                 providers=providers,
             )
-            ctx_id = 0
             self._app.prepare(ctx_id=ctx_id, det_size=det_size)
+            self.provider = self._get_detection_provider()
             print(f"[SCRFD] Model ready at det_size={det_size}.")
+            print(f"[SCRFD] Detection provider: {self.provider}")
         except Exception as e:
             print(f"[SCRFD] Failed to load model: {e}")
             self.enabled = False
+            self.provider = "failed"
 
     def detect(self, frame_bgr: np.ndarray) -> List[BBoxResult]:
         """Run SCRFD face detection and return normalized bounding boxes."""
@@ -105,3 +238,15 @@ class ScrfdFaceDetector:
             ))
 
         return results
+
+    def _get_detection_provider(self) -> str:
+        """Return the first ONNX provider used by the detection session."""
+        try:
+            model = self._app.models.get("detection")
+            session = getattr(model, "session", None) or getattr(model, "sess", None)
+            if session is None:
+                return "unknown"
+            providers = session.get_providers()
+            return providers[0] if providers else "unknown"
+        except Exception:
+            return "unknown"

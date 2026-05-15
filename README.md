@@ -19,7 +19,7 @@ python -m venv .venv
 .venv\Scripts\activate
 
 # Install dependencies
-pip install opencv-contrib-python mediapipe numpy ultralytics pygame PyOpenGL SpoutGL
+pip install opencv-contrib-python mediapipe numpy ultralytics pygame PyOpenGL SpoutGL dearpygui
 
 # Optional SCRFD backend
 # First grab MSVC (latest) and Windows SDK from https://visualstudio.microsoft.com/visual-cpp-build-tools/
@@ -36,9 +36,19 @@ pip install insightface onnxruntime-gpu
 #    where cudnn64_9.dll
 # 5. Verify ONNX Runtime can use CUDA:
 #    python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+#
+# Note: get_available_providers() only proves the CUDA provider is installed.
+# It can still fail at runtime if CUDA/cuDNN DLLs are not loadable by Python.
+# If SCRFD prints that cudnn64_9.dll is missing, install cuDNN 9.x and add its
+# bin folder to PATH, then restart the terminal. NVIDIA's cuDNN installer may
+# use a nested folder like C:\Program Files\NVIDIA\CUDNN\v9.21\bin\12.9\x64;
+# the app will try to discover this layout automatically.
 
 # Install PyTorch with CUDA (for GPU-accelerated YOLO)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# If YOLO says ultralytics is not installed, restore it without replacing OpenCV:
+pip install ultralytics --no-deps
 
 # Download MediaPipe face landmarker model
 curl -L -o face_landmarker_v2_with_blendshapes.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
@@ -72,11 +82,11 @@ python main.py 3         # use camera index 3
 
 ## Controls
 
-- UI trackbars: Mask Mode (eyes/face/eyes+brows), Blur, Dilation, Hold ms, Detector (MP+SCRFD+YOLO/MP+SCRFD/MP+YOLO/MP/SCRFD/YOLO), Box Confidence, Camera selector
-- `c` — toggle calibration mode
-- `r` — reset calibration
-- Arrow keys — nudge calibration transform
-- `q` — quit
+- Dear PyGui controls: Detector, Mask Mode, Box Confidence, Blur, Dilation, Hold ms, Camera selector, Calibration mode, ArUco columns
+- Buttons: Start/Stop Calibration, Capture ArUco, Clear Points, Reset, Quit
+- Camera preview: click to place a camera calibration point; drag to draw an ArUco ROI; right-click to clear ROI
+- Projector grid preview: click to place the matching projector point in manual calibration mode
+- Keyboard: `c` toggles calibration, `s` captures ArUco, `x` clears current points, `r` resets, arrow keys nudge, `q` quits
 
 ## Calibration (camera to projector transform)
 
