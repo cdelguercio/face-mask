@@ -1,6 +1,27 @@
+import os
+
+# Silence MediaPipe's noisy native telemetry. MediaPipe's C++ pipeline ships
+# with a Google Play Logs ("clearcut") uploader that fails when run outside
+# an Android device and spams stderr every 60 seconds:
+#   E0000 ... portable_clearcut_uploader.cc:90] Failed to send to clearcut...
+# Suppressing absl/glog/TF logging below FATAL silences it. These MUST be
+# set before mediapipe / any detector import.
+os.environ.setdefault("GLOG_minloglevel", "3")
+os.environ.setdefault("ABSL_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+os.environ.setdefault("GRPC_VERBOSITY", "NONE")
+
 import argparse
 import sys
 import time
+
+# Pin python.exe to the discrete GPU before anything touches OpenGL.
+# This is a no-op after the first run; on the first run it writes a registry
+# preference and re-execs the process so Spout shares textures on the right
+# adapter. Must run before pygame / SpoutGL / cv2 import any GL.
+from gpu_preference import ensure_high_performance_gpu
+
+ensure_high_performance_gpu()
 
 import cv2
 import numpy as np
