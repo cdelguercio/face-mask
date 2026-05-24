@@ -17,6 +17,26 @@ import numpy as np
 VIRTUAL_KEYWORDS = ["virtual", "nvidia", "obs", "snap", "manycam", "xsplit", "imaging edge"]
 
 
+def _get_directshow_camera_names() -> list[str]:
+    """Return camera friendly names in OpenCV's DirectShow index order.
+
+    OpenCV's VideoCapture(idx, CAP_DSHOW) enumerates the same DirectShow
+    device list as pygrabber.FilterGraph.get_input_devices(), so the
+    returned list is index-aligned with VideoCapture indexes. Returns an
+    empty list if pygrabber is missing or the enumeration fails — callers
+    must fall back to generic "Cam N" labels in that case.
+    """
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+    except ImportError:
+        return []
+    try:
+        return list(FilterGraph().get_input_devices())
+    except Exception as e:
+        print(f"[Camera] Could not enumerate device names via DirectShow: {e}")
+        return []
+
+
 def _check_windows_camera_devices() -> list[dict]:
     """Use PowerShell to list camera devices registered in Windows."""
     if platform.system() != "Windows":
@@ -101,8 +121,18 @@ class CameraInfo:
     label: str  # human-readable label for the trackbar
 
 
-def _probe_camera(idx: int, backend: int, timeout_s: float = 3.0) -> Optional[CameraInfo]:
-    """Probe a single camera index with a timeout. Returns CameraInfo or None."""
+def _probe_camera(
+    idx: int,
+    backend: int,
+    timeout_s: float = 3.0,
+    friendly_name: Optional[str] = None,
+) -> Optional[CameraInfo]:
+    """Probe a single camera index with a timeout. Returns CameraInfo or None.
+
+    If friendly_name is provided (from pygrabber/DirectShow enumeration), it's
+    used as the human-readable label; otherwise we fall back to a generic
+    "Cam N" label.
+    """
     result = [None]
 
     def _probe():
@@ -113,12 +143,26 @@ def _probe_camera(idx: int, backend: int, timeout_s: float = 3.0) -> Optional[Ca
                 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
                 h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 backend_name = "DSHOW" if backend == cv2.CAP_DSHOW else "MSMF"
-                is_virt = _is_virtual_camera(frame)
-                tag = " (virtual)" if is_virt else ""
+
+                # Virtual-camera detection: prefer the friendly device name
+                # when available — it's a far more reliable signal than the
+                # frame.std() heuristic, which false-positives on legitimate
+                # high-contrast sensors (e.g. monochrome global-shutter UVC
+                # cameras like the See3CAM_CU27).
+                if friendly_name:
+                    name_lower = friendly_name.lower()
+                    is_virt = any(kw in name_lower for kw in VIRTUAL_KEYWORDS)
+                    tag = " (virtual)" if is_virt else ""
+                    label = f"{friendly_name}{tag} [{w}x{h}]"
+                else:
+                    is_virt = _is_virtual_camera(frame)
+                    tag = " (virtual)" if is_virt else ""
+                    label = f"Cam {idx}{tag} [{w}x{h}]"
+
                 result[0] = CameraInfo(
                     index=idx, backend=backend, backend_name=backend_name,
                     width=w, height=h, is_virtual=is_virt,
-                    label=f"Cam {idx}{tag} [{w}x{h}]",
+                    label=label,
                 )
             cap.release()
 
@@ -136,6 +180,12 @@ def discover_cameras() -> List[CameraInfo]:
     Stops early after 3 consecutive failures to avoid hanging on
     problematic virtual camera drivers.
     """
+    # Enumerate friendly names up front so each probe gets the matching name.
+    # The list is OpenCV-index-aligned; missing entries (e.g. names list is
+    # shorter than the probe range) just yield None and we fall back to
+    # generic labels.
+    ds_names = _get_directshow_camera_names()
+
     cameras = []
     consecutive_fails = 0
 
@@ -144,8 +194,11 @@ def discover_cameras() -> List[CameraInfo]:
             print(f"  skipping indices {idx}-9 (3 consecutive failures)")
             break
 
-        print(f"  probing index {idx}...", end="", flush=True)
-        info = _probe_camera(idx, cv2.CAP_DSHOW, timeout_s=3.0)
+        name = ds_names[idx] if idx < len(ds_names) else None
+        name_str = name if name else "?"
+        print(f"  probing index {idx} ({name_str})...", end="", flush=True)
+
+        info = _probe_camera(idx, cv2.CAP_DSHOW, timeout_s=3.0, friendly_name=name)
         if info:
             cameras.append(info)
             consecutive_fails = 0
